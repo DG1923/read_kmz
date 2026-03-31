@@ -12,7 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC_DIR = REPO_ROOT / "src"
 DATA_DIR = SRC_DIR / "data"
 LEGACY_KMZ = SRC_DIR / "sample_code" / "dc1.kmz"
-BATCH_KMZ_GLOB = "dc*.kmz"
+BATCH_KMZ_GLOB = "*.kmz"
 
 OUTPUT_CSV = SRC_DIR / "sample_code" / "kmz_parcels.csv"
 OUTPUT_JSON = SRC_DIR / "sample_code" / "kmz_parcels.json"
@@ -36,6 +36,8 @@ SHEET_TRANSITION_PATTERN = re.compile(
     r"\bT[ỜƠ]\s*S[ỐÔ]\s*(\d+).*?CHỈNH\s*L[ÝY]\s*TH[ÀA]NH\s*T[ỜƠ]\s*S[ỐÔ]\s*(\d+)",
     re.I,
 )
+PARCEL_TOTAL_PATTERN = re.compile(r"^Tổng\s+số\s+thửa:\s*(\d+)$", re.I)
+SPLIT_SHEET_COUNT_PATTERN = re.compile(r"^THÀNH\s+(\d+)\s+T[ỜƠ]$", re.I)
 PAREN_LAND_AREA_PATTERN = re.compile(
     r"^\(?(?P<land_use>CLN|ONT|ODT|TMD|DGT|LNC|ONT\+CLN|ONT\+LNC|ODT\+CLN|SKC|TTC)\s*[:)]\s*(?P<area>\d+(?:[.,]\d+)?)",
     re.I,
@@ -165,6 +167,7 @@ def extract_metadata(points: list[dict]) -> dict:
     labels = [point["name"] for point in metadata_points if point["name"]]
 
     explicit_pair = None
+    explicit_pair_label = None
     for label in labels:
         match = SHEET_TRANSITION_PATTERN.search(label)
         if match:
@@ -172,6 +175,7 @@ def extract_metadata(points: list[dict]) -> dict:
                 normalize_sheet_number(match.group(1)),
                 normalize_sheet_number(match.group(2)),
             )
+            explicit_pair_label = label
             break
 
     ordered_sheets: list[str] = []
@@ -180,6 +184,26 @@ def extract_metadata(points: list[dict]) -> dict:
             sheet = normalize_sheet_number(match.group(1))
             if sheet not in ordered_sheets:
                 ordered_sheets.append(sheet)
+
+    parcel_total_labels = []
+    parcel_total_values = []
+    split_sheet_count_labels = []
+    split_sheet_count_values = []
+    address_label = explicit_pair_label
+
+    for label in labels:
+        parcel_total_match = PARCEL_TOTAL_PATTERN.fullmatch(label)
+        if parcel_total_match:
+            parcel_total_labels.append(label)
+            parcel_total_values.append(int(parcel_total_match.group(1)))
+
+        split_match = SPLIT_SHEET_COUNT_PATTERN.fullmatch(label)
+        if split_match:
+            split_sheet_count_labels.append(label)
+            split_sheet_count_values.append(int(split_match.group(1)))
+
+        if address_label is None and SHEET_TRANSITION_PATTERN.search(label):
+            address_label = label
 
     has_before = any(label and "TRƯỚC CHỈNH LÝ" in label.upper() for label in labels)
     has_after = any(label and "SAU CHỈNH LÝ" in label.upper() for label in labels)
@@ -203,10 +227,24 @@ def extract_metadata(points: list[dict]) -> dict:
         sheet_before = None
         sheet_after = None
 
+    parcel_total_before = parcel_total_values[0] if parcel_total_values else None
+    parcel_total_after = parcel_total_values[1] if len(parcel_total_values) >= 2 else None
+    split_sheet_count_before = split_sheet_count_values[0] if split_sheet_count_values else None
+    split_sheet_count_after = split_sheet_count_values[1] if len(split_sheet_count_values) >= 2 else None
+
     return {
         "sheet_number_before": sheet_before,
         "sheet_number_after": sheet_after,
         "adjustment_stage": adjustment_stage,
+        "parcel_total_before": parcel_total_before,
+        "parcel_total_after": parcel_total_after,
+        "split_sheet_count_before": split_sheet_count_before,
+        "split_sheet_count_after": split_sheet_count_after,
+        "parcel_total_labels": parcel_total_labels,
+        "parcel_total_values": parcel_total_values,
+        "split_sheet_count_labels": split_sheet_count_labels,
+        "split_sheet_count_values": split_sheet_count_values,
+        "address_label": address_label,
         "metadata_labels": labels[:50],
     }
 
@@ -415,6 +453,11 @@ def build_candidate(
         "sheet_number_before": metadata["sheet_number_before"],
         "sheet_number_after": metadata["sheet_number_after"],
         "adjustment_stage": metadata["adjustment_stage"],
+        "parcel_total_before": metadata["parcel_total_before"],
+        "parcel_total_after": metadata["parcel_total_after"],
+        "split_sheet_count_before": metadata["split_sheet_count_before"],
+        "split_sheet_count_after": metadata["split_sheet_count_after"],
+        "address_label": metadata["address_label"],
         "parcel_number": anchor["name"],
         "land_use_type": land_use_type,
         "sqm2": sqm2,
@@ -557,6 +600,11 @@ def extract_all() -> tuple[list[dict], list[dict]]:
                 "sheet_number_before": candidate["sheet_number_before"],
                 "sheet_number_after": candidate["sheet_number_after"],
                 "adjustment_stage": candidate["adjustment_stage"],
+                "parcel_total_before": candidate["parcel_total_before"],
+                "parcel_total_after": candidate["parcel_total_after"],
+                "split_sheet_count_before": candidate["split_sheet_count_before"],
+                "split_sheet_count_after": candidate["split_sheet_count_after"],
+                "address_label": candidate["address_label"],
                 "parcel_number": candidate["parcel_number"],
                 "land_use_type": candidate["land_use_type"],
                 "sqm2": candidate["sqm2"],
@@ -575,6 +623,15 @@ def extract_all() -> tuple[list[dict], list[dict]]:
                 "sheet_number_before": metadata["sheet_number_before"],
                 "sheet_number_after": metadata["sheet_number_after"],
                 "adjustment_stage": metadata["adjustment_stage"],
+                "parcel_total_before": metadata["parcel_total_before"],
+                "parcel_total_after": metadata["parcel_total_after"],
+                "split_sheet_count_before": metadata["split_sheet_count_before"],
+                "split_sheet_count_after": metadata["split_sheet_count_after"],
+                "parcel_total_labels": metadata["parcel_total_labels"],
+                "parcel_total_values": metadata["parcel_total_values"],
+                "split_sheet_count_labels": metadata["split_sheet_count_labels"],
+                "split_sheet_count_values": metadata["split_sheet_count_values"],
+                "address_label": metadata["address_label"],
                 "metadata_labels": metadata["metadata_labels"],
                 "error": None,
                 "candidates": file_candidates,
@@ -592,6 +649,11 @@ def write_outputs(candidates: list[dict], debug: list[dict]) -> None:
         "sheet_number_before",
         "sheet_number_after",
         "adjustment_stage",
+        "parcel_total_before",
+        "parcel_total_after",
+        "split_sheet_count_before",
+        "split_sheet_count_after",
+        "address_label",
         "parcel_number",
         "land_use_type",
         "sqm2",
